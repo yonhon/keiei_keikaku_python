@@ -89,50 +89,73 @@ def read_crop_schedules(path: Path) -> dict[str, CropSchedule]:
     workbook = load_workbook(path, data_only=True)
     ws = workbook[SCHEDULE_SHEET]
     crops: dict[str, CropSchedule] = {}
+    headers = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
+
+    id_col = header_col(headers, "#", 1)
+    base_id_col = header_col(headers, "参照用#", 2)
+    name_col = header_col(headers, "野菜名", 3)
+    income_col = header_col(headers, "所得（千円）", 10)
+    gross_col = header_col(headers, "粗収益", 24)
+    cost_col = header_col(headers, "経営費(減価償却費除く)", 25)
+    total_labor_col = header_col(headers, "総労働時間(h)", 11)
+    fallow_col = headers.get("休栽年数")
+    labor_s_col = header_col(headers, "s(h)", 7)
+    labor_o_col = header_col(headers, "o(h)", 8)
+    labor_f_col = header_col(headers, "f(h)", 9)
+    gross_per_month_col = header_col(headers, "粗収益/月", 27)
+    depreciation_col = headers.get("減価償却費")
+    month_cols_by_label = [headers.get(label) for label in [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3]]
+    if any(col is None for col in month_cols_by_label):
+        month_cols_by_label = list(range(12, 24))
 
     for row in range(2, ws.max_row + 1):
-        crop_id = norm_id(ws.cell(row, 1).value)
+        crop_id = norm_id(ws.cell(row, id_col).value)
         if crop_id is None:
             continue
-        base_crop_id = norm_id(ws.cell(row, 2).value) or crop_id
+        base_crop_id = norm_id(ws.cell(row, base_id_col).value) or crop_id
         crops[crop_id] = CropSchedule(
             crop_id=crop_id,
             base_crop_id=base_crop_id,
-            name=str(ws.cell(row, 3).value),
+            name=str(ws.cell(row, name_col).value),
             family=None,
-            fallow_years=0,
-            labor_s=num(ws.cell(row, 7).value),
-            labor_o=num(ws.cell(row, 8).value),
-            labor_f=num(ws.cell(row, 9).value),
-            income=num(ws.cell(row, 10).value),
-            total_labor=num(ws.cell(row, 11).value),
-            gross_revenue=num(ws.cell(row, 24).value),
-            operating_cost=num(ws.cell(row, 25).value),
-            gross_per_month=num(ws.cell(row, 27).value),
-            depreciation=ws.cell(row, 28).value,
+            fallow_years=int(num(ws.cell(row, fallow_col).value)) if fallow_col else 0,
+            labor_s=num(ws.cell(row, labor_s_col).value),
+            labor_o=num(ws.cell(row, labor_o_col).value),
+            labor_f=num(ws.cell(row, labor_f_col).value),
+            income=num(ws.cell(row, income_col).value),
+            total_labor=num(ws.cell(row, total_labor_col).value),
+            gross_revenue=num(ws.cell(row, gross_col).value),
+            operating_cost=num(ws.cell(row, cost_col).value),
+            gross_per_month=num(ws.cell(row, gross_per_month_col).value),
+            depreciation=ws.cell(row, depreciation_col).value if depreciation_col else None,
             monthly_marks=tuple(
-                norm_mark(ws.cell(row, col).value) for col in range(12, 24)
+                norm_mark(ws.cell(row, col).value) for col in month_cols_by_label
             ),
         )
 
-    indicator = workbook["経営指標"]
-    indicators: dict[str, tuple[str | None, int]] = {}
-    for row in range(2, indicator.max_row + 1):
-        for col in (1, 2):
-            crop_id = norm_id(indicator.cell(row, col).value)
-            if crop_id is not None:
-                indicators[crop_id] = (
-                    indicator.cell(row, 7).value,
-                    int(num(indicator.cell(row, 8).value)),
-                )
+    if fallow_col is None and "経営指標" in workbook.sheetnames:
+        indicator = workbook["経営指標"]
+        indicators: dict[str, tuple[str | None, int]] = {}
+        for row in range(2, indicator.max_row + 1):
+            for col in (1, 2):
+                crop_id = norm_id(indicator.cell(row, col).value)
+                if crop_id is not None:
+                    indicators[crop_id] = (
+                        indicator.cell(row, 7).value,
+                        int(num(indicator.cell(row, 8).value)),
+                    )
 
-    for crop in crops.values():
-        if crop.base_crop_id in indicators:
-            family, fallow_years = indicators[crop.base_crop_id]
-            object.__setattr__(crop, "family", family)
-            object.__setattr__(crop, "fallow_years", fallow_years)
+        for crop in crops.values():
+            if crop.base_crop_id in indicators:
+                family, fallow_years = indicators[crop.base_crop_id]
+                object.__setattr__(crop, "family", family)
+                object.__setattr__(crop, "fallow_years", fallow_years)
 
     return crops
+
+
+def header_col(headers: dict[Any, int], name: Any, fallback: int) -> int:
+    return headers.get(name, fallback)
 
 
 def norm_mark(value: Any) -> str | None:

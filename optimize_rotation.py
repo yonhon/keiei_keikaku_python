@@ -230,7 +230,7 @@ def make_run_dir(
     suffix = f"{field_count}fields"
     if labor_cap != 240.0 or soft_labor != 200.0:
         suffix += f"_cap{format_number(labor_cap)}_soft{format_number(soft_labor)}"
-    run_dir = OUT_DIR / f"{workbook_path.stem}_{suffix}_{timestamp}"
+    run_dir = OUT_DIR / workbook_path.stem / f"{workbook_path.stem}_{suffix}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 
@@ -647,21 +647,27 @@ def set_plan_formulas(ws, fields: tuple[str, ...], layout: dict[str, int]) -> No
             cost_row = layout["cost_start"] + i
             ws.cell(name_row, col).value = (
                 f'=IF({letter}{mark_row}="","",'
-                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$C,3,0))'
+                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AZ,'
+                f'MATCH("野菜名",栽培スケジュール!$1:$1,0),0))'
             )
             ws.cell(labor_row, col).value = (
                 f'=IF({letter}{mark_row}="","",'
-                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$I,'
-                f'IF(ISNUMBER(SEARCH("s",{letter}{mark_row})),7,'
-                f'IF(ISNUMBER(SEARCH("o",{letter}{mark_row})),8,9)),0))'
+                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AZ,'
+                f'IF(ISNUMBER(SEARCH("s",{letter}{mark_row})),'
+                f'MATCH("s(h)",栽培スケジュール!$1:$1,0),'
+                f'IF(ISNUMBER(SEARCH("o",{letter}{mark_row})),'
+                f'MATCH("o(h)",栽培スケジュール!$1:$1,0),'
+                f'MATCH("f(h)",栽培スケジュール!$1:$1,0))),0))'
             )
             ws.cell(revenue_row, col).value = (
                 f'=IF(ISNUMBER(SEARCH("f",{letter}{mark_row})),'
-                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AA,27,0),"")'
+                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AZ,'
+                f'MATCH("粗収益/月",栽培スケジュール!$1:$1,0),0),"")'
             )
             ws.cell(cost_row, col).value = (
                 f'=IF(ISNUMBER(SEARCH("s",{letter}{mark_row})),'
-                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AA,25,0),"")'
+                f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AZ,'
+                f'MATCH("経営費(減価償却費除く)",栽培スケジュール!$1:$1,0),0),"")'
             )
         ws.cell(layout["labor_total"], col).value = (
             f"=SUM({letter}{layout['labor_start']}:{letter}{layout['labor_total'] - 1})"
