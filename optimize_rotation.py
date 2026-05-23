@@ -35,6 +35,7 @@ class Candidate:
     index: int
     field: str
     crop_id: str
+    base_crop_id: str
     crop_name: str
     fiscal_year: int
     active_months: tuple[int, ...]
@@ -57,7 +58,7 @@ def main() -> int:
     assets = assets_for_field_count(read_assets(path), args.fields)
     labor_cap = args.labor_cap
     soft_labor = min(args.soft_labor, labor_cap)
-    run_dir = make_run_dir(args.workbook, args.fields, labor_cap, soft_labor)
+    run_dir = make_run_dir(args.workbook, args.fields, labor_cap, soft_labor, args.time_limit)
     candidates = build_candidates(crops, fields)
     print(f"Candidates: {len(candidates)}")
 
@@ -75,10 +76,10 @@ def main() -> int:
             if vars_in_month:
                 model.Add(sum(vars_in_month) <= 1)
 
-    # Same crop in the same field must respect its fallow period.
+    # Same crop group in the same field must respect its fallow period.
     by_field_crop: dict[tuple[str, str], list[Candidate]] = {}
     for candidate in candidates:
-        by_field_crop.setdefault((candidate.field, candidate.crop_id), []).append(candidate)
+        by_field_crop.setdefault((candidate.field, candidate.base_crop_id), []).append(candidate)
     for group in by_field_crop.values():
         for i, first in enumerate(group):
             for second in group[i + 1 :]:
@@ -110,7 +111,7 @@ def main() -> int:
     model.Maximize(profit_expr - overtime_penalty)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 20
+    solver.parameters.max_time_in_seconds = args.time_limit
     solver.parameters.num_search_workers = 8
     status = solver.Solve(model)
     print(f"Status: {solver.StatusName(status)}")
@@ -208,9 +209,17 @@ def parse_args() -> argparse.Namespace:
         default=200.0,
         help="Soft monthly labor-hour threshold used in the objective penalty.",
     )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=20.0,
+        help="Solver time limit in seconds.",
+    )
     args = parser.parse_args()
     if args.fields < 1 or args.fields > len(FIELD_NAMES):
         parser.error("--fields must be between 1 and 26")
+    if args.time_limit <= 0:
+        parser.error("--time-limit must be positive")
     return args
 
 
@@ -224,12 +233,18 @@ def make_output_prefix(
 
 
 def make_run_dir(
-    workbook_path: Path, field_count: int, labor_cap: float, soft_labor: float
+    workbook_path: Path,
+    field_count: int,
+    labor_cap: float,
+    soft_labor: float,
+    time_limit: float,
 ) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"{field_count}fields"
     if labor_cap != 240.0 or soft_labor != 200.0:
         suffix += f"_cap{format_number(labor_cap)}_soft{format_number(soft_labor)}"
+    if time_limit != 20.0:
+        suffix += f"_time{format_number(time_limit)}s"
     run_dir = OUT_DIR / workbook_path.stem / f"{workbook_path.stem}_{suffix}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -243,14 +258,10 @@ def build_candidates(crops, fields: tuple[str, ...]) -> list[Candidate]:
     candidates: list[Candidate] = []
     for field in fields:
         for crop in crops.values():
-            sowing_offsets = [
-                offset
-                for offset, mark in enumerate(crop.monthly_marks)
-                if mark is not None and "s" in mark
-            ]
-            if not sowing_offsets:
+            schedule_offsets = crop_schedule_offsets(crop.monthly_marks)
+            if not schedule_offsets:
                 continue
-            sowing_offset = sowing_offsets[0]
+            sowing_offset = schedule_offsets[0]
 
             for fiscal_year in range(4):
                 base = fiscal_year * 12
@@ -261,10 +272,8 @@ def build_candidates(crops, fields: tuple[str, ...]) -> list[Candidate]:
                 marks = [None for _ in range(ANNUAL_MONTHS)]
                 harvest_months: list[int] = []
 
-                for cycle_index in range(12):
-                    offset = (sowing_offset + cycle_index) % 12
-                    year_add = 1 if offset < sowing_offset else 0
-                    month = base + year_add * 12 + offset
+                for offset in schedule_offsets:
+                    month = base + sowing_offset + ((offset - sowing_offset) % 12)
                     mark = crop.monthly_marks[offset]
                     if month >= ANNUAL_MONTHS or mark is None:
                         continue
@@ -294,6 +303,7 @@ def build_candidates(crops, fields: tuple[str, ...]) -> list[Candidate]:
                         index=len(candidates),
                         field=field,
                         crop_id=crop.crop_id,
+                        base_crop_id=crop.base_crop_id,
                         crop_name=crop.name,
                         fiscal_year=fiscal_year,
                         active_months=tuple(active_months),
@@ -310,6 +320,23 @@ def build_candidates(crops, fields: tuple[str, ...]) -> list[Candidate]:
                 )
 
     return candidates
+
+
+def crop_schedule_offsets(monthly_marks: tuple[str | None, ...]) -> list[int]:
+    work_offsets = [offset for offset, mark in enumerate(monthly_marks) if mark is not None]
+    if not work_offsets:
+        return []
+
+    for start in work_offsets:
+        start_mark = monthly_marks[start]
+        if start_mark is None or "s" not in start_mark:
+            continue
+        ordered = sorted(work_offsets, key=lambda offset: (offset - start) % 12)
+        last_mark = monthly_marks[ordered[-1]]
+        if last_mark is not None and "f" in last_mark:
+            return ordered
+
+    return []
 
 
 def write_outputs(

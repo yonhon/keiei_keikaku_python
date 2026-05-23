@@ -91,8 +91,8 @@ def read_crop_schedules(path: Path) -> dict[str, CropSchedule]:
     crops: dict[str, CropSchedule] = {}
     headers = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
 
-    id_col = header_col(headers, "#", 1)
-    base_id_col = header_col(headers, "参照用#", 2)
+    id_col = header_col(headers, ("#作付", "#"), 1)
+    base_id_col = header_col(headers, ("#品目", "参照用#"), 2)
     name_col = header_col(headers, "野菜名", 3)
     income_col = header_col(headers, "所得（千円）", 10)
     gross_col = header_col(headers, "粗収益", 24)
@@ -154,8 +154,11 @@ def read_crop_schedules(path: Path) -> dict[str, CropSchedule]:
     return crops
 
 
-def header_col(headers: dict[Any, int], name: Any, fallback: int) -> int:
-    return headers.get(name, fallback)
+def header_col(headers: dict[Any, int], names: Any | tuple[Any, ...], fallback: int) -> int:
+    for name in names if isinstance(names, tuple) else (names,):
+        if name in headers:
+            return headers[name]
+    return fallback
 
 
 def norm_mark(value: Any) -> str | None:
@@ -427,19 +430,22 @@ def check_constraints(plan: CurrentPlan, crops: dict[str, CropSchedule]) -> list
                         f"{field}: harvest at {month_label(month)} but next sowing at {month_label(next_month)}"
                     )
 
-        last_harvest_by_crop: dict[str, int] = {}
+        last_harvest_by_crop: dict[str, tuple[int, str]] = {}
         for month, (crop_id, mark) in enumerate(zip(plan.crop_ids[field], plan.marks[field])):
             if crop_id is None or mark is None:
                 continue
-            if mark == "s" and crop_id in last_harvest_by_crop:
-                fallow_months = crops[crop_id].fallow_years * 12
-                elapsed = month - last_harvest_by_crop[crop_id]
+            crop = crops[crop_id]
+            base_crop_id = crop.base_crop_id
+            if mark == "s" and base_crop_id in last_harvest_by_crop:
+                last_harvest_month, last_crop_id = last_harvest_by_crop[base_crop_id]
+                fallow_months = crop.fallow_years * 12
+                elapsed = month - last_harvest_month
                 if elapsed < fallow_months:
                     issues.append(
-                        f"{field}: {crop_id} starts at {month_label(month)} after {elapsed} months; needs {fallow_months}"
+                        f"{field}: {crop_id} starts at {month_label(month)} after {elapsed} months from {last_crop_id}; needs {fallow_months}"
                     )
             if "f" in mark:
-                last_harvest_by_crop[crop_id] = month
+                last_harvest_by_crop[base_crop_id] = (month, crop_id)
 
     return issues
 
