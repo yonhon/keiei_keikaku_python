@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font
 from ortools.sat.python import cp_model
 
 from keiei_plan import (
@@ -52,7 +53,7 @@ class Candidate:
 
 def main() -> int:
     args = parse_args()
-    fields = FIELD_NAMES[: args.fields]
+    fields = field_names(args.fields)
     path = args.workbook
     crops = read_crop_schedules(path)
     assets = assets_for_field_count(read_assets(path), args.fields)
@@ -216,11 +217,23 @@ def parse_args() -> argparse.Namespace:
         help="Solver time limit in seconds.",
     )
     args = parser.parse_args()
-    if args.fields < 1 or args.fields > len(FIELD_NAMES):
-        parser.error("--fields must be between 1 and 26")
+    if args.fields < 1:
+        parser.error("--fields must be positive")
     if args.time_limit <= 0:
         parser.error("--time-limit must be positive")
     return args
+
+
+def field_names(count: int) -> tuple[str, ...]:
+    return tuple(excel_column_name(index) for index in range(1, count + 1))
+
+
+def excel_column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(ord("A") + remainder) + name
+    return name
 
 
 def make_output_prefix(
@@ -281,7 +294,7 @@ def build_candidates(crops, fields: tuple[str, ...]) -> list[Candidate]:
                     marks[month] = mark
                     if mark == "s":
                         labor[month] = crop.labor_s
-                        cost[month] = crop.operating_cost
+                        cost[month] = crop.operating_cost_per_month
                     elif mark == "o":
                         labor[month] = crop.labor_o
                     else:
@@ -430,7 +443,7 @@ def write_optimized_workbook(
         expand_plan_sheet_to_four_fields(ws)
         source_is_four_field = True
     if field_count in (3, 4) and "固定資産" in workbook.sheetnames:
-        workbook["固定資産"]["B18"] = field_count
+        set_asset_plot_count(workbook["固定資産"], field_count)
 
     layout_fields = FIELD_NAMES[:4] if source_is_four_field else fields
     crop_grid, mark_grid = selected_to_grids(selected, layout_fields)
@@ -468,7 +481,17 @@ def write_optimized_workbook(
     except PermissionError:
         fallback = output_path.with_name(f"{output_path.stem}_new{output_path.suffix}")
         workbook.save(fallback)
-        return fallback
+    return fallback
+
+
+def set_asset_plot_count(ws, field_count: int) -> None:
+    for row in range(1, ws.max_row + 1):
+        for col in range(1, ws.max_column):
+            if ws.cell(row, col).value == "plot_count":
+                ws.cell(row, col + 1).value = field_count
+                return
+    if ws["B17"].value == "区画数":
+        ws["B18"] = field_count
 
 
 def write_rotation_labor_workbook(
@@ -694,7 +717,8 @@ def set_plan_formulas(ws, fields: tuple[str, ...], layout: dict[str, int]) -> No
             ws.cell(cost_row, col).value = (
                 f'=IF(ISNUMBER(SEARCH("s",{letter}{mark_row})),'
                 f'VLOOKUP({letter}{crop_row},栽培スケジュール!$A:$AZ,'
-                f'MATCH("経営費(減価償却費除く)",栽培スケジュール!$1:$1,0),0),"")'
+                f'IFERROR(MATCH("経営費/月",栽培スケジュール!$1:$1,0),'
+                f'MATCH("経営費(減価償却費除く)",栽培スケジュール!$1:$1,0)),0),"")'
             )
         ws.cell(layout["labor_total"], col).value = (
             f"=SUM({letter}{layout['labor_start']}:{letter}{layout['labor_total'] - 1})"
@@ -716,6 +740,10 @@ def set_summary_formulas(ws, layout: dict[str, int]) -> None:
     annual_ranges = [("C", "N"), ("O", "Z"), ("AA", "AL"), ("AM", "AX")]
     year_cols = ["C", "D", "E", "F"]
     ss = layout["summary_start"]
+    unmerge_summary_range(ws, ss, ss + 44, 1, 11)
+    for row in range(ss, ss + 45):
+        for col in range(1, 12):
+            ws.cell(row, col).value = None
     fill_scenario_summary(
         ws,
         ss,
@@ -728,7 +756,7 @@ def set_summary_formulas(ws, layout: dict[str, int]) -> None:
     )
     fill_scenario_summary(
         ws,
-        ss + 22,
+        ss + 23,
         annual_ranges,
         year_cols,
         layout["revenue_total"],
@@ -736,6 +764,46 @@ def set_summary_formulas(ws, layout: dict[str, int]) -> None:
         add_rent=False,
         purchase=True,
     )
+    apply_summary_style_overrides(ws, ss)
+
+
+def apply_summary_style_overrides(ws, start: int) -> None:
+    for row in (start, start + 23):
+        cell = ws.cell(row, 1)
+        cell.font = copy(cell.font)
+        cell.font = Font(
+            name=cell.font.name,
+            sz=11,
+            b=cell.font.b,
+            i=cell.font.i,
+            vertAlign=cell.font.vertAlign,
+            underline=cell.font.underline,
+            strike=cell.font.strike,
+            color=cell.font.color,
+        )
+
+    for row in (start + 17, start + 40):
+        cell = ws.cell(row, 8)
+        cell.alignment = copy(cell.alignment)
+        cell.alignment = Alignment(
+            horizontal=cell.alignment.horizontal,
+            vertical=cell.alignment.vertical,
+            text_rotation=cell.alignment.text_rotation,
+            wrap_text=cell.alignment.wrap_text,
+            shrink_to_fit=False,
+            indent=cell.alignment.indent,
+        )
+
+
+def unmerge_summary_range(ws, min_row: int, max_row: int, min_col: int, max_col: int) -> None:
+    for merged_range in list(ws.merged_cells.ranges):
+        if (
+            merged_range.max_row >= min_row
+            and merged_range.min_row <= max_row
+            and merged_range.max_col >= min_col
+            and merged_range.min_col <= max_col
+        ):
+            ws.unmerge_cells(str(merged_range))
 
 
 def fill_scenario_summary(
@@ -749,8 +817,13 @@ def fill_scenario_summary(
     add_rent: bool,
     purchase: bool,
 ) -> None:
+    asset_purchase = asset_value_formula("asset_purchase")
+    annual_depreciation = asset_value_formula("annual_depreciation")
+    annual_rent = asset_value_formula("annual_rent_thousand_yen")
+    land_purchase = asset_value_formula("land_purchase_thousand_yen")
     ws.cell(start, 1).value = "農地購入の場合" if purchase else "農地賃借の場合"
     ws.cell(start + 1, 1).value = "<簡易PL>"
+    ws.cell(start + 1, 6).value = "単位：千円"
     ws.cell(start + 2, 2).value = "FY"
     ws.cell(start + 3, 2).value = "粗収益"
     ws.cell(start + 4, 2).value = "直接経営費"
@@ -760,19 +833,16 @@ def fill_scenario_summary(
         ws[f"{col}{start + 2}"] = i
         first, last = annual_ranges[i]
         ws[f"{col}{start + 3}"] = f"=SUM({first}{revenue_row}:{last}{revenue_row})"
-        rent_add = f"+J{start + 5}" if add_rent else ""
+        rent_add = f"+{annual_rent}" if add_rent else ""
         ws[f"{col}{start + 4}"] = f"=SUM({first}{cost_row}:{last}{cost_row}){rent_add}"
-        ws[f"{col}{start + 5}"] = "=固定資産!$H$14"
+        ws[f"{col}{start + 5}"] = f"={annual_depreciation}"
         ws[f"{col}{start + 6}"] = f"={col}{start + 3}-{col}{start + 4}-{col}{start + 5}"
-    if add_rent:
-        ws[f"H{start + 5}"] = "土地貸借料"
-        ws[f"J{start + 5}"] = "=固定資産!F21/1000"
-        ws[f"K{start + 5}"] = "千円を加算"
-    ws[f"H{start + 6}"] = "※平均所得"
+    ws[f"H{start + 6}"] = "平均所得"
     ws[f"J{start + 6}"] = f"=AVERAGE(D{start + 6}:F{start + 6})"
     ws[f"K{start + 6}"] = "千円"
 
     ws.cell(start + 8, 1).value = "<簡易PL_試行期間加味>"
+    ws.cell(start + 8, 6).value = "単位：千円"
     ws.cell(start + 9, 2).value = "FY"
     for i, col in enumerate(year_cols):
         ws[f"{col}{start + 9}"] = i
@@ -790,38 +860,50 @@ def fill_scenario_summary(
         ws[f"{col}{start + 13}"] = (
             f"={col}{start + 10}-{col}{start + 11}-{col}{start + 12}"
         )
-    ws[f"H{start + 13}"] = "※平均所得"
+    ws[f"H{start + 13}"] = "平均所得"
     ws[f"J{start + 13}"] = f"=AVERAGE(D{start + 13}:F{start + 13})"
     ws[f"K{start + 13}"] = "千円"
 
     ws.cell(start + 15, 1).value = "<簡易CF>"
+    ws.cell(start + 15, 6).value = "単位：千円"
     ws.cell(start + 16, 2).value = "FY"
-    ws.cell(start + 17, 2).value = "in"
-    ws.cell(start + 18, 2).value = "out"
-    ws.cell(start + 19, 2).value = "CF"
-    ws.cell(start + 20, 2).value = "期末残"
+    ws.cell(start + 17, 2).value = "期初残"
+    ws.cell(start + 18, 2).value = "収入"
+    ws.cell(start + 19, 2).value = "支出"
+    ws.cell(start + 20, 2).value = "Net"
+    ws.cell(start + 21, 2).value = "期末残"
     for i, col in enumerate(year_cols):
         ws[f"{col}{start + 16}"] = i
-        ws[f"{col}{start + 17}"] = f"={col}{start + 10}"
+        ws[f"{col}{start + 18}"] = f"={col}{start + 10}"
     if purchase:
-        ws[f"C{start + 18}"] = f"=C{start + 11}+固定資産!D14+I{start + 19}"
-        ws[f"I{start + 19}"] = "=固定資産!F24/1000"
-        ws[f"J{start + 19}"] = "千円を加算"
+        ws[f"C{start + 19}"] = f"=C{start + 11}+{asset_purchase}+{land_purchase}"
         initial_cash = 15000
     else:
-        ws[f"C{start + 18}"] = f"=C{start + 11}+固定資産!D14"
+        ws[f"C{start + 19}"] = f"=C{start + 11}+{asset_purchase}"
         initial_cash = 10000
     for col in year_cols[1:]:
-        ws[f"{col}{start + 18}"] = f"={col}{start + 11}*(1-$I$50)"
+        ws[f"{col}{start + 19}"] = f"={col}{start + 11}"
     for col in year_cols:
-        ws[f"{col}{start + 19}"] = f"={col}{start + 17}-{col}{start + 18}"
-    ws[f"C{start + 20}"] = f"=J{start + 20}+C{start + 19}"
-    ws[f"D{start + 20}"] = f"=C{start + 20}+D{start + 19}"
-    ws[f"E{start + 20}"] = f"=D{start + 20}+E{start + 19}"
-    ws[f"F{start + 20}"] = f"=E{start + 20}+F{start + 19}"
-    ws[f"H{start + 20}"] = "期初C"
-    ws[f"J{start + 20}"] = initial_cash
-    ws[f"K{start + 20}"] = "千円"
+        ws[f"{col}{start + 20}"] = f"={col}{start + 18}-{col}{start + 19}"
+    ws[f"C{start + 17}"] = (
+        f"=-MIN(MIN(C{start + 20}:D{start + 20}),"
+        f"MIN(C{start + 20}:E{start + 20}),"
+        f"MIN(C{start + 20}:F{start + 20}))+1000"
+    )
+    ws[f"D{start + 17}"] = f"=C{start + 21}"
+    ws[f"E{start + 17}"] = f"=D{start + 21}"
+    ws[f"F{start + 17}"] = f"=E{start + 21}"
+    ws[f"C{start + 21}"] = f"=C{start + 17}+C{start + 20}"
+    ws[f"D{start + 21}"] = f"=C{start + 21}+D{start + 20}"
+    ws[f"E{start + 21}"] = f"=D{start + 21}+E{start + 20}"
+    ws[f"F{start + 21}"] = f"=E{start + 21}+F{start + 20}"
+    ws[f"H{start + 17}"] = "必要現預金"
+    ws[f"J{start + 17}"] = f"=C{start + 17}"
+    ws[f"K{start + 17}"] = "千円"
+
+
+def asset_value_formula(key: str) -> str:
+    return f'VLOOKUP("{key}",固定資産!$A:$B,2,FALSE)'
 
 
 def excel_crop_id(crop_id: str | None) -> int | str | None:

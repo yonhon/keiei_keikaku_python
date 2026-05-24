@@ -1,16 +1,16 @@
 # 経営計画 探索スクリプト
 
-Excelの `経営指標`、`栽培スケジュール`、`固定資産` を読み込み、OR-Toolsで輪作計画を探索します。結果はCSVとExcelに出力します。
+Excelの `栽培スケジュール` と `固定資産` を読み込み、OR-Toolsで輪作計画を探索します。結果はCSVとExcelに出力します。
 
 ## 前提
 
 - Pythonは `venv` を使います。
 - 必要な主なパッケージは `openpyxl` と `ortools` です。
-- 入力Excelには以下のシート名が必要です。
-  - `経営指標`
+- 探索には以下のシート名が必要です。
   - `栽培スケジュール`
   - `固定資産`
-  - `経営計画`
+- 3区画または4区画の結果を既存の形式へ書き戻す場合は、`経営計画` シートも必要です。
+- 旧形式の `栽培スケジュール` で休栽年数がない場合のみ、補完用に `経営指標` シートを参照します。
 
 ## ファイル構成
 
@@ -28,7 +28,7 @@ Excelの `経営指標`、`栽培スケジュール`、`固定資産` を読み�
 入力Excelの現行計画を検算します。
 
 ```powershell
-.\venv\Scripts\python.exe validate_current_plan.py --workbook 経営計画_20260521.xlsx
+.\venv\Scripts\python.exe validate_current_plan.py --workbook 経営計画_sample.xlsx
 ```
 
 注意: `validate_current_plan.py` は主に既存シートとの検算用です。4区画フォーマットや手入力済み計画の状態によっては、現行計画との差分が出ることがあります。探索用データとして重要なのは、`栽培スケジュール` のID重複や収益・費用の欠損がないことです。
@@ -38,25 +38,25 @@ Excelの `経営指標`、`栽培スケジュール`、`固定資産` を読み�
 4区画で標準条件の探索をします。
 
 ```powershell
-.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_20260521.xlsx --fields 4
+.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_sample.xlsx --fields 4
 ```
 
 8区画で探索します。
 
 ```powershell
-.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_20260521.xlsx --fields 8
+.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_sample.xlsx --fields 8
 ```
 
 200時間を月労働時間のハード上限、150時間を努力目標として探索します。
 
 ```powershell
-.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_20260521.xlsx --fields 8 --labor-cap 200 --soft-labor 150
+.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_sample.xlsx --fields 8 --labor-cap 200 --soft-labor 150
 ```
 
 探索時間を120秒に延ばして深掘りします。
 
 ```powershell
-.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_20260521.xlsx --fields 16 --time-limit 120
+.\venv\Scripts\python.exe optimize_rotation.py --workbook 経営計画_sample.xlsx --fields 16 --time-limit 120
 ```
 
 ## オプション
@@ -83,8 +83,8 @@ Excelの `経営指標`、`栽培スケジュール`、`固定資産` を読み�
 例:
 
 ```text
-out/経営計画_20260521/
-  経営計画_20260521_8fields_cap200_soft150_20260521_190446/
+out/経営計画_sample/
+  経営計画_sample_8fields_cap200_soft150_20260521_190446/
 ```
 
 出力される主なファイル:
@@ -119,5 +119,8 @@ out/経営計画_20260521/
 - `栽培スケジュール` の `#作付` は一意にしてください。旧形式の `#` も読み取れます。
 - 休栽年数は `#品目` 単位で判定します。旧形式の `参照用#` も読み取れます。
 - 月別スケジュールは、最初の作業月を単純な4月始まりではなく、`s` で始まり `f` で終わる一連の作付サイクルとして読み取ります。3月開始で翌年度4月以降に続く作型にも対応します。
+- `栽培スケジュール` に `経営費/月` がある場合、播種月の経営費はこの列を使います。ない場合は旧形式として `経営費(減価償却費除く)` を使います。
+- `固定資産` は `キー` / `値` の表がある場合、その表を優先して読みます。必須キーは `asset_purchase`、`annual_depreciation`、`annual_rent_thousand_yen`、`land_purchase_thousand_yen` です。`plot_count` がある場合は区画数変更時の土地関連費スケールに使います。
 - 収穫月がある作型は、粗収益/月が空または0にならないようにしてください。
 - 播種月がある作型は、経営費が空にならないようにしてください。
+

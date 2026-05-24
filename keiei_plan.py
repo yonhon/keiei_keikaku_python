@@ -32,6 +32,7 @@ class CropSchedule:
     total_labor: float
     gross_revenue: float
     operating_cost: float
+    operating_cost_per_month: float
     gross_per_month: float
     depreciation: float | None
     monthly_marks: tuple[str | None, ...]
@@ -41,13 +42,9 @@ class CropSchedule:
 class Assets:
     asset_purchase: float
     annual_depreciation: float
-    annual_rent_yen: float
+    annual_rent_thousand_yen: float
     land_purchase_thousand_yen: float
     plot_count: float | None = None
-
-    @property
-    def annual_rent_thousand_yen(self) -> float:
-        return self.annual_rent_yen / 1000
 
 
 @dataclass(frozen=True)
@@ -97,6 +94,7 @@ def read_crop_schedules(path: Path) -> dict[str, CropSchedule]:
     income_col = header_col(headers, "所得（千円）", 10)
     gross_col = header_col(headers, "粗収益", 24)
     cost_col = header_col(headers, "経営費(減価償却費除く)", 25)
+    cost_per_month_col = headers.get("経営費/月")
     total_labor_col = header_col(headers, "総労働時間(h)", 11)
     fallow_col = headers.get("休栽年数")
     labor_s_col = header_col(headers, "s(h)", 7)
@@ -126,6 +124,11 @@ def read_crop_schedules(path: Path) -> dict[str, CropSchedule]:
             total_labor=num(ws.cell(row, total_labor_col).value),
             gross_revenue=num(ws.cell(row, gross_col).value),
             operating_cost=num(ws.cell(row, cost_col).value),
+            operating_cost_per_month=(
+                num(ws.cell(row, cost_per_month_col).value)
+                if cost_per_month_col
+                else num(ws.cell(row, cost_col).value)
+            ),
             gross_per_month=num(ws.cell(row, gross_per_month_col).value),
             depreciation=ws.cell(row, depreciation_col).value if depreciation_col else None,
             monthly_marks=tuple(
@@ -170,21 +173,52 @@ def norm_mark(value: Any) -> str | None:
 def read_assets(path: Path) -> Assets:
     workbook = load_workbook(path, data_only=True)
     ws = workbook[ASSET_SHEET]
+    key_values = read_asset_key_values(ws)
+    if key_values:
+        return Assets(
+            asset_purchase=key_values["asset_purchase"],
+            annual_depreciation=key_values["annual_depreciation"],
+            annual_rent_thousand_yen=key_values["annual_rent_thousand_yen"],
+            land_purchase_thousand_yen=key_values["land_purchase_thousand_yen"],
+            plot_count=key_values.get("plot_count"),
+        )
     if ws["B17"].value == "区画数":
         plot_count = num(ws["B18"].value)
         return Assets(
             asset_purchase=num(ws["D14"].value),
             annual_depreciation=num(ws["H14"].value),
-            annual_rent_yen=num(ws["F21"].value),
+            annual_rent_thousand_yen=num(ws["F21"].value) / 1000,
             land_purchase_thousand_yen=num(ws["F24"].value) / 1000,
             plot_count=plot_count,
         )
     return Assets(
         asset_purchase=num(ws["D14"].value),
         annual_depreciation=num(ws["H14"].value),
-        annual_rent_yen=num(ws["B18"].value),
+        annual_rent_thousand_yen=num(ws["B18"].value) / 1000,
         land_purchase_thousand_yen=4431.0,
     )
+
+
+def read_asset_key_values(ws) -> dict[str, float]:
+    required = {
+        "asset_purchase",
+        "annual_depreciation",
+        "annual_rent_thousand_yen",
+        "land_purchase_thousand_yen",
+    }
+    for row in range(1, ws.max_row + 1):
+        for col in range(1, ws.max_column):
+            if ws.cell(row, col).value == "キー" and ws.cell(row, col + 1).value == "値":
+                values: dict[str, float] = {}
+                current = row + 1
+                while current <= ws.max_row:
+                    key = ws.cell(current, col).value
+                    if key is None or key == "":
+                        break
+                    values[str(key)] = num(ws.cell(current, col + 1).value)
+                    current += 1
+                return values if required.issubset(values) else {}
+    return {}
 
 
 def assets_for_field_count(assets: Assets, field_count: int) -> Assets:
@@ -194,7 +228,7 @@ def assets_for_field_count(assets: Assets, field_count: int) -> Assets:
     return Assets(
         asset_purchase=assets.asset_purchase,
         annual_depreciation=assets.annual_depreciation,
-        annual_rent_yen=assets.annual_rent_yen * scale,
+        annual_rent_thousand_yen=assets.annual_rent_thousand_yen * scale,
         land_purchase_thousand_yen=assets.land_purchase_thousand_yen * scale,
         plot_count=float(field_count),
     )
@@ -246,7 +280,7 @@ def calculate(plan: CurrentPlan, crops: dict[str, CropSchedule], assets: Assets)
             if mark == "f":
                 revenue_by_field[field][month] = crop.gross_per_month
             if mark == "s":
-                cost_by_field[field][month] = crop.operating_cost
+                cost_by_field[field][month] = crop.operating_cost_per_month
 
     labor_total = sum_fields(labor_by_field)
     revenue_total = sum_fields(revenue_by_field)
@@ -267,7 +301,7 @@ def calculate(plan: CurrentPlan, crops: dict[str, CropSchedule], assets: Assets)
         assets,
         add_rent=False,
         initial_cash=15000.0,
-        land_purchase=4431.0,
+        land_purchase=assets.land_purchase_thousand_yen,
     )
 
     return CalculationResult(

@@ -48,6 +48,3 @@ Thumbs.db
 # other
 experiments/
 out/
-*.xlsx
-*.pptx
-*.pdf
